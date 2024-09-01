@@ -139,7 +139,50 @@ router.post('/accept-request', authMiddleware, async (req, res) => {
   });
   
   
-  
+  // @route   GET /users
+// @desc    Get all users with full details excluding the current user
+// @access  Private
+router.get('/allUsers', authMiddleware, async (req, res) => {
+  try {
+    const currentUserId = req.user.id;
+
+    // Find the current user's Friend record to get blocked users
+    const currentUserRecord = await Friend.findOne({ user: currentUserId });
+    if (!currentUserRecord) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User record not found'
+      });
+    }
+
+    const blockedUsers = currentUserRecord.blockedUsers;
+
+    // Find all users excluding the current user and blocked users
+    const users = await User.find({
+      _id: { $ne: currentUserId, $nin: blockedUsers }
+    }).select('-password');
+
+    if (!users.length) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'No users found'
+      });
+    }
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Users retrieved successfully',
+      data: users
+    });
+  } catch (err) {
+    console.error('Server error:', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Server error'
+    });
+  }
+});
+
   
 
 // @route   GET /get-all-requests

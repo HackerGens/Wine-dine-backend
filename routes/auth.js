@@ -312,37 +312,4 @@ router.get('/getProfileData', authMiddleware, async (req, res) => {
   }
 });
 
-
-// @route   GET /users
-// @desc    Get all users with full details excluding the current user
-// @access  Private
-router.get('/allUsers', authMiddleware, async (req, res) => {
-  try {
-    // Extract userId from JWT
-    const currentUserId = req.user.id;
-
-    // Find all users excluding the current user
-    const users = await User.find({ _id: { $ne: currentUserId } }).select('-password');
-
-    if (!users.length) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'No users found',
-      });
-    }
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Users retrieved successfully',
-      data: users,
-    });
-  } catch (err) {
-    console.error('Server error:', err.message);
-    res.status(500).json({
-      status: 'error',
-      message: 'Server error',
-    });
-  }
-});
-
 module.exports = router;
