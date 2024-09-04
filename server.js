@@ -1,15 +1,8 @@
 const express = require('express');
 const connectDB = require('./config/db');
 const dotenv = require('dotenv');
-const momentRoutes = require('./routes/moments'); // Import the new moments routes
-const activityRouter = require('./routes/activity');
-
-// Import the activity routes
-const activityRoutes = require('./routes/activity');
-// Other middleware and route imports
-const friendsRoute = require('./routes/friends');
-
-require('dotenv').config(); // Load environment variables from .env file
+const http = require('http');
+const WebSocket = require('ws');
 
 // Load environment variables
 dotenv.config();
@@ -19,16 +12,50 @@ connectDB();
 
 const app = express();
 
+// Middleware
 app.use(express.urlencoded({ extended: true }));
-// Middleware for parsing JSON bodies
 app.use(express.json());
-
 
 // Define routes
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/moments', momentRoutes); // Use the new routes
-app.use('/api/friends', friendsRoute);
-app.use('/api', activityRouter);
-const PORT = process.env.PORT || 5001;
+app.use('/api/moments', require('./routes/moments'));
+app.use('/api/friends', require('./routes/friends'));
+app.use('/api', require('./routes/activity'));
+app.use('/api/messenger', require('./routes/messenger'));
 
-app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
+// Create an HTTP server instance
+const server = http.createServer(app);
+
+// Set up WebSocket server using the HTTP server instance
+const wss = new WebSocket.Server({ server });
+
+// WebSocket connection handling
+wss.on('connection', (ws, req) => {
+  ws.on('message', (message) => {
+    console.log('Received message:', message);
+    // Handle incoming messages here
+  });
+
+  ws.on('close', () => {
+    console.log('WebSocket connection closed');
+  });
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+  });
+});
+
+// Broadcast function to be used in routes
+const broadcast = (data, userId) => {
+  wss.clients.forEach(client => {
+    if (client.userId === userId && client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(data));
+    }
+  });
+};
+
+// Start the server
+const PORT = process.env.PORT || 5001;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+module.exports = { server, broadcast }; // Ensure both are exported
