@@ -1,12 +1,208 @@
 const express = require('express');
 const router = express.Router();
-const User = require('../models/User');
+const mongoose = require('mongoose');
 const Message = require('../models/Message');
-const ArchivedChat = require('../models/ArchivedChat');
-const Friend = require('../models/Friend');
+const User = require('../models/User');
+const { broadcast } = require('../utils/broadcast');
+const { encryptMessage } = require('../utils/encrypt');
+const { decryptMessage } = require('../utils/decrypt');
 const authMiddleware = require('../middleware/authMiddleware');
-const upload = require('../middleware/upload'); // For handling image uploads
-const { broadcast } = require('../server'); // Import the broadcast function
+
+// Utility function to validate MongoDB Object IDs
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+// Unified route for sending and updating messages
+router.post('/messages', authMiddleware, async (req, res) => {
+  const { receiverId, text, imageUrl, emoji, messageId } = req.body;
+
+  // Validate input
+  if (!receiverId || (!text && !imageUrl && !emoji && !messageId)) {
+    return res.status(400).json({ status: 'error', message: 'Receiver ID and message content or messageId required' });
+  }
+
+  if (!isValidObjectId(receiverId) || (messageId && !isValidObjectId(messageId))) {
+    return res.status(400).json({ status: 'error', message: 'Invalid ID format' });
+  }
+
+  try {
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ status: 'error', message: 'User authentication failed' });
+    }
+
+    // Fetch sender and receiver
+    const [sender, receiver] = await Promise.all([
+      User.findById(req.user.id),
+      User.findById(receiverId)
+    ]);
+
+    if (!sender || !receiver) {
+      return res.status(404).json({ status: 'error', message: 'Sender or receiver not found' });
+    }
+
+    // Encrypt the message text if provided
+    let encryptedText = null;
+    if (text) {
+      if (!receiver.publicKey) {
+        return res.status(404).json({ status: 'error', message: 'Receiver public key not found for encryption' });
+      }
+      encryptedText = encryptMessage(text, receiver.publicKey);
+    }
+
+    let message;
+    if (messageId) {
+      // Update existing message
+      message = await Message.findById(messageId);
+      if (!message) {
+        return res.status(404).json({ status: 'error', message: 'Message not found' });
+      }
+      if (message.sender.toString() !== req.user.id) {
+        return res.status(403).json({ status: 'error', message: 'Unauthorized' });
+      }
+
+      message.text = encryptedText || message.text;
+      message.imageUrl = imageUrl || message.imageUrl;
+      message.emoji = emoji || message.emoji;
+      await message.save();
+    } else {
+      // Create a new message
+      message = new Message({
+        sender: req.user.id,
+        recipient: receiverId,
+        text: encryptedText,
+        imageUrl: imageUrl || null,
+        emoji: emoji || null,
+      });
+
+      await message.save();
+
+      // Broadcast the message to WebSocket clients
+      broadcast({
+        type: 'message',
+        senderId: req.user.id,
+        receiverId,
+        text: encryptedText,
+        imageUrl,
+        emoji,
+      });
+    }
+
+    res.status(200).json({
+      status: 'success',
+      message: messageId ? 'Message updated successfully' : 'Message sent successfully',
+      data: { message },
+    });
+  } catch (err) {
+    console.error('Error handling message:', err.message);
+    res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+});
+
+// Unified route for fetching messages
+router.get('/messages', authMiddleware, async (req, res) => {
+  const { userId, messageId } = req.query;
+
+  if (!messageId && !userId) {
+    return res.status(400).json({ status: 'error', message: 'User ID or message ID required' });
+  }
+
+  try {
+    let messages;
+    if (messageId) {
+      // Fetch specific message
+      messages = await Message.findById(messageId);
+      if (!messages) {
+        return res.status(404).json({ status: 'error', message: 'Message not found' });
+      }
+      if (messages.recipient.toString() !== req.user.id && messages.sender.toString() !== req.user.id) {
+        return res.status(403).json({ status: 'error', message: 'Unauthorized' });
+      }
+      // Decrypt the message text if encrypted
+      if (messages.text) {
+        messages.text = decryptMessage(messages.text, req.user.privateKey);
+      }
+    } else {
+      // Fetch conversation history
+      messages = await Message.find({
+        $or: [
+          { sender: req.user.id, recipient: userId },
+          { sender: userId, recipient: req.user.id },
+        ],
+      }).sort({ createdAt: 1 });
+
+      // Decrypt messages before sending them back
+      messages = messages.map((msg) => {
+        if (msg.text) {
+          msg.text = decryptMessage(msg.text, req.user.privateKey);
+        }
+        return msg;
+      });
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: messages,
+    });
+  } catch (err) {
+    console.error('Error fetching messages:', err.message);
+    res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+});
+
+// PUT route to mark messages as read
+router.put('/messages/read', authMiddleware, async (req, res) => {
+  const { messageIds } = req.body;
+
+  if (!messageIds || !Array.isArray(messageIds)) {
+    return res.status(400).json({ status: 'error', message: 'Message IDs required' });
+  }
+
+  try {
+    await Message.updateMany(
+      { _id: { $in: messageIds }, recipient: req.user.id },
+      { $set: { read: true } }
+    );
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Messages marked as read',
+    });
+  } catch (err) {
+    console.error('Error marking messages as read:', err.message);
+    res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+});
+
+// DELETE route to delete messages
+router.delete('/messages/delete/:messageId', authMiddleware, async (req, res) => {
+  const { messageId } = req.params;
+
+  if (!isValidObjectId(messageId)) {
+    return res.status(400).json({ status: 'error', message: 'Invalid message ID' });
+  }
+
+  try {
+    const message = await Message.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({ status: 'error', message: 'Message not found' });
+    }
+
+    // Only the sender or recipient can delete the message
+    if (message.sender.toString() !== req.user.id && message.recipient.toString() !== req.user.id) {
+      return res.status(403).json({ status: 'error', message: 'Unauthorized' });
+    }
+
+    await message.remove();
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Message deleted',
+    });
+  } catch (err) {
+    console.error('Error deleting message:', err.message);
+    res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+});
 
 // Set User Status
 router.post('/status/set', authMiddleware, async (req, res) => {
@@ -63,6 +259,7 @@ router.post('/chat/typing', authMiddleware, (req, res) => {
 router.post('/messages/schedule', authMiddleware, async (req, res) => {
   const { receiverId, text, emojis, image, scheduleTime } = req.body;
 
+  // Validate input
   if (!receiverId || (!text && !emojis && !image)) {
     return res.status(400).json({
       status: 'error',
@@ -70,42 +267,64 @@ router.post('/messages/schedule', authMiddleware, async (req, res) => {
     });
   }
 
+  if (!isValidObjectId(receiverId)) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Invalid receiver ID format'
+    });
+  }
+
+  if (!scheduleTime || new Date(scheduleTime) <= new Date()) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'Invalid schedule time. Must be a future date'
+    });
+  }
+
   try {
-    const currentUser = await User.findById(req.user.id);
-    const receiver = await User.findById(receiverId);
+    // Fetch current user and recipient
+    const [currentUser, recipientUser] = await Promise.all([
+      User.findById(req.user.id),
+      User.findById(receiverId)
+    ]);
 
-    if (currentUser.status === 'busy' || currentUser.status === 'offline') {
-      const recentMessages = await Message.find({
-        senderId: req.user.id,
-        receiverId,
-        createdAt: { $gte: new Date(Date.now() - 24*60*60*1000) }
+    if (!currentUser) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Current user not found'
       });
-
-      if (recentMessages.length >= 1) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'You can only send one message in the last 24 hours while busy or offline'
-        });
-      }
     }
 
-    const message = new Message({
-      senderId: req.user.id,
-      receiverId,
-      text: text || null,
-      emojis: emojis || null,
-      image: image || null,
+    if (!recipientUser) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Recipient not found'
+      });
+    }
+
+    // Encrypt the message text if provided
+    const encryptedText = text ? encryptMessage(text, recipientUser.publicKey) : null;
+
+    // Save scheduled message
+    const scheduledMessage = new Message({
+      sender: req.user.id,
+      recipient: receiverId,
+      text: encryptedText,
+      imageUrl: image || null,
+      emoji: emojis || null,
       scheduleTime
     });
 
-    await message.save();
+    await scheduledMessage.save();
+
+    // Optionally, implement logic to handle scheduled message sending
 
     res.status(200).json({
       status: 'success',
       message: 'Message scheduled successfully'
     });
   } catch (err) {
-    console.error('Server error:', err.message);
+    console.error('Error scheduling message:', err.message);
     res.status(500).json({
       status: 'error',
       message: 'Server error'
@@ -113,154 +332,5 @@ router.post('/messages/schedule', authMiddleware, async (req, res) => {
   }
 });
 
-// Message Reactions
-router.post('/messages/reaction', authMiddleware, async (req, res) => {
-  const { messageId, reaction } = req.body;
-
-  try {
-    const message = await Message.findById(messageId);
-
-    if (!message) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Message not found'
-      });
-    }
-
-    message.reactions.push({ userId: req.user.id, reaction });
-    await message.save();
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Reaction added'
-    });
-  } catch (err) {
-    console.error('Server error:', err.message);
-    res.status(500).json({
-      status: 'error',
-      message: 'Server error'
-    });
-  }
-});
-
-// Get Chat History
-router.get('/messages/history', authMiddleware, async (req, res) => {
-  const { userId } = req.query;
-
-  try {
-    const messages = await Message.find({
-      $or: [{ senderId: req.user.id, receiverId: userId }, { senderId: userId, receiverId: req.user.id }]
-    });
-
-    res.status(200).json({
-      status: 'success',
-      data: messages
-    });
-  } catch (err) {
-    console.error('Server error:', err.message);
-    res.status(500).json({
-      status: 'error',
-      message: 'Server error'
-    });
-  }
-});
-
-// Archive Chat
-router.post('/messages/archive', authMiddleware, async (req, res) => {
-  const { chatId } = req.body;
-
-  try {
-    const archivedChat = await ArchivedChat.create({
-      userId: req.user.id,
-      chatId
-    });
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Chat archived successfully',
-      data: archivedChat
-    });
-  } catch (err) {
-    console.error('Server error:', err.message);
-    res.status(500).json({
-      status: 'error',
-      message: 'Server error'
-    });
-  }
-});
-
-// Get All Conversations
-router.get('/messages/conversations', authMiddleware, async (req, res) => {
-  try {
-    const conversations = await Message.find({
-      $or: [{ senderId: req.user.id }, { receiverId: req.user.id }]
-    }).distinct('receiverId');
-
-    res.status(200).json({
-      status: 'success',
-      data: conversations
-    });
-  } catch (err) {
-    console.error('Server error:', err.message);
-    res.status(500).json({
-      status: 'error',
-      message: 'Server error'
-    });
-  }
-});
-
-// Send Message to Non-Friends
-router.post('/messages/non-friends', authMiddleware, async (req, res) => {
-  const { receiverId, text, emojis, image } = req.body;
-
-  if (!receiverId || (!text && !emojis && !image)) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'Receiver ID and at least one message component are required'
-    });
-  }
-
-  try {
-    const currentUser = await User.findById(req.user.id);
-    const receiver = await User.findById(receiverId);
-    const isFriend = await Friend.exists({ user: req.user.id, friends: receiverId });
-
-    if (!isFriend && (currentUser.status === 'busy' || currentUser.status === 'offline')) {
-      const recentMessages = await Message.find({
-        senderId: req.user.id,
-        receiverId,
-        createdAt: { $gte: new Date(Date.now() - 24*60*60*1000) }
-      });
-
-      if (recentMessages.length >= 1) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'You can only send one message in the last 24 hours while busy or offline'
-        });
-      }
-    }
-
-    const message = new Message({
-      senderId: req.user.id,
-      receiverId,
-      text: text || null,
-      emojis: emojis || null,
-      image: image || null
-    });
-
-    await message.save();
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Message sent successfully'
-    });
-  } catch (err) {
-    console.error('Server error:', err.message);
-    res.status(500).json({
-      status: 'error',
-      message: 'Server error'
-    });
-  }
-});
 
 module.exports = router;

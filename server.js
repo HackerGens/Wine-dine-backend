@@ -21,7 +21,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/moments', require('./routes/moments'));
 app.use('/api/friends', require('./routes/friends'));
 app.use('/api', require('./routes/activity'));
-app.use('/api/messenger', require('./routes/messenger'));
+app.use('/api/messenger', require('./routes/messenger')); // Messenger route
 
 // Create an HTTP server instance
 const server = http.createServer(app);
@@ -30,32 +30,40 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // WebSocket connection handling
-wss.on('connection', (ws, req) => {
+wss.on('connection', (ws) => {
+  console.log('New WebSocket connection');
+
+  // Handle incoming messages (if needed)
   ws.on('message', (message) => {
     console.log('Received message:', message);
-    // Handle incoming messages here
   });
 
+  // Handle WebSocket closure
   ws.on('close', () => {
     console.log('WebSocket connection closed');
   });
 
+  // Handle WebSocket errors
   ws.on('error', (error) => {
     console.error('WebSocket error:', error);
   });
+
+  // Optionally, attach user info to WebSocket if needed
+  ws.userId = null; // Initialize it, later can assign userId dynamically on connection
 });
 
-// Broadcast function to be used in routes
+// Broadcast function to be used in the routes
 const broadcast = (data, userId) => {
-  wss.clients.forEach(client => {
+  wss.clients.forEach((client) => {
     if (client.userId === userId && client.readyState === WebSocket.OPEN) {
       client.send(JSON.stringify(data));
     }
   });
 };
 
+// Export server and broadcast function for use in other modules
+module.exports = { server, broadcast };
+
 // Start the server
 const PORT = process.env.PORT || 5001;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
-module.exports = { server, broadcast }; // Ensure both are exported

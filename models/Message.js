@@ -1,3 +1,4 @@
+// models/Message.js
 const mongoose = require('mongoose');
 
 const MessageSchema = new mongoose.Schema({
@@ -12,14 +13,16 @@ const MessageSchema = new mongoose.Schema({
     required: true
   },
   text: {
-    type: String,
-    trim: true
+    type: String,  // Encrypted message stored as a Base64 string
+    required: true
   },
   imageUrl: {
-    type: String
+    type: String,
+    default: null
   },
   emoji: {
-    type: String
+    type: String,
+    default: null
   },
   timestamp: {
     type: Date,

@@ -46,7 +46,15 @@ const UserSchema = new mongoose.Schema({
     type: String, // Profile Image URL
     default: null,
   },
+  publicKey: {
+    type: String,
+    default: null,
+  },
+  privateKey: {
+    type: String,
+    default: null,
+  }
 
-});
+},);
 
 module.exports = mongoose.model('User', UserSchema);
