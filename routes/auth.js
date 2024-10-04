@@ -52,9 +52,6 @@ router.post('/signup', async (req, res) => {
     user = new User({ name, email, password });
     user.password = await bcrypt.hash(password, 10);
 
-    // Save the user to the database
-    await user.save();
-
     // Generate a verification code
     const verificationCode = crypto.randomBytes(3).toString('hex').toUpperCase();
     user.verificationCode = verificationCode;
@@ -66,28 +63,6 @@ router.post('/signup', async (req, res) => {
       status: 'success',
       message: 'User registered successfully. Verification code sent to email'
     });
-
-    // Send the verification code via email (commented out)
-    // const mailOptions = {
-    //   from: process.env.EMAIL_USER,
-    //   to: email,
-    //   subject: 'Your Verification Code',
-    //   text: `Your verification code is ${verificationCode}. It will expire in 1 hour.`
-    // };
-
-    // transporter.sendMail(mailOptions, (error, info) => {
-    //   if (error) {
-    //     console.error('Error sending email:', error);
-    //     return res.status(500).json({
-    //       status: 'error',
-    //       message: 'Failed to send verification email'
-    //     });
-    //   }
-    //   res.status(200).json({
-    //     status: 'success',
-    //     message: 'User registered successfully. Verification code sent to email'
-    //   });
-    // });
   } catch (err) {
     console.error('Server error:', err.message);
     res.status(500).json({
@@ -187,7 +162,8 @@ router.post('/signin', async (req, res) => {
 
     const payload = { user: { id: user._id, name: user.name, email: user.email } };
 
-    jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '1h' }, (err, token) => {
+    // Set the token to expire in 7 days
+    jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' }, (err, token) => {
       if (err) {
         console.error('Token generation error:', err.message);
         return res.status(500).json({

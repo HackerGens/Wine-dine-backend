@@ -3,6 +3,7 @@ const connectDB = require('./config/db');
 const dotenv = require('dotenv');
 const http = require('http');
 const WebSocket = require('ws');
+const { setWebSocketServer } = require('./utils/broadcast'); // Import the broadcast utility
 
 // Load environment variables
 dotenv.config();
@@ -28,6 +29,9 @@ const server = http.createServer(app);
 
 // Set up WebSocket server using the HTTP server instance
 const wss = new WebSocket.Server({ server });
+
+// Set the WebSocket server for broadcasting
+setWebSocketServer(wss); // Call this to set the WebSocket server
 
 // WebSocket connection handling
 wss.on('connection', (ws) => {

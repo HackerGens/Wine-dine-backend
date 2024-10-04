@@ -26,12 +26,24 @@ const MessageSchema = new mongoose.Schema({
   },
   timestamp: {
     type: Date,
-    default: Date.now
+    default: Date.now  // This field can still be used for message sending time
+  },
+  createdAt: {  // New field for the message creation time
+    type: Date,
+    default: Date.now  // Automatically set to the current date and time
   },
   status: {
     type: String,
     enum: ['sent', 'delivered', 'read'],
     default: 'sent'
+  },
+  scheduledAt: {  // New field for scheduled message time
+    type: Date,
+    default: null  // Set to null if not scheduled
+  },
+  sent: {  // New field to track if the message has been sent
+    type: Boolean,
+    default: false
   }
 });
 

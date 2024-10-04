@@ -4,51 +4,63 @@ const authMiddleware = require('../middleware/authMiddleware');
 const Friend = require('../models/Friend');
 const User = require('../models/User');
 
+// Helper function to handle missing user ID in the request
+const validateUserId = (userId, res) => {
+  if (!userId) {
+    res.status(400).json({
+      status: 'error',
+      message: 'User ID is required',
+    });
+    return false;
+  }
+  return true;
+};
+
 // @route   POST /send-request
 // @desc    Send a friend request
 // @access  Private
 router.post('/send-request', authMiddleware, async (req, res) => {
-  const { userId } = req.body; // User to send request to
-
-  if (!userId) {
-    return res.status(400).json({
-      status: 'error',
-      message: 'User ID is required'
-    });
-  }
+  const { userId } = req.body;
+  if (!validateUserId(userId, res)) return;
 
   try {
     const currentUserId = req.user.id;
-
     if (currentUserId === userId) {
       return res.status(400).json({
         status: 'error',
-        message: 'You cannot send a friend request to yourself'
+        message: 'You cannot send a friend request to yourself',
       });
     }
 
-    // Ensure both users exist
-    const [currentUser, targetUser] = await Promise.all([
-      User.findById(currentUserId),
-      User.findById(userId)
-    ]);
-
+    const targetUser = await User.findById(userId);
     if (!targetUser) {
       return res.status(404).json({
         status: 'error',
-        message: 'Target user not found'
+        message: 'Target user not found',
       });
     }
 
-    let friendRecord = await Friend.findOne({ user: currentUserId });
-    if (!friendRecord) {
-      friendRecord = new Friend({ user: currentUserId });
+    // Check if they are already friends
+    const existingFriendship = await Friend.findOne({
+      $or: [
+        { user: currentUserId, friends: userId },
+        { user: userId, friends: currentUserId }
+      ]
+    });
+
+    if (existingFriendship) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'You are already friends with this user',
+      });
     }
+
+    let friendRecord = await Friend.findOne({ user: currentUserId }) || new Friend({ user: currentUserId });
 
     if (friendRecord.pendingRequests.includes(userId)) {
       return res.status(400).json({
         status: 'error',
-        message: 'Friend request already sent'
+        message: 'Friend request already sent',
       });
     }
 
@@ -57,329 +69,252 @@ router.post('/send-request', authMiddleware, async (req, res) => {
 
     res.status(200).json({
       status: 'success',
-      message: 'Friend request sent successfully'
+      message: 'Friend request sent successfully',
     });
   } catch (err) {
-    console.error('Server error:', err.message);
+    console.error('Error sending request:', err.message);
     res.status(500).json({
       status: 'error',
-      message: 'Server error'
+      message: 'Server error',
     });
   }
 });
+
+
 
 // @route   POST /accept-request
 // @desc    Accept a friend request
 // @access  Private
 router.post('/accept-request', authMiddleware, async (req, res) => {
-    const { userId } = req.body; // User whose request is being accepted
-  
-    if (!userId) {
+  const { userId } = req.body;
+  if (!validateUserId(userId, res)) return;
+
+  try {
+    const currentUserId = req.user.id;
+
+    let currentUserRecord = await Friend.findOne({ user: currentUserId });
+    let targetUserRecord = await Friend.findOne({ user: userId });
+
+    if (!currentUserRecord || !targetUserRecord) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User record not found',
+      });
+    }
+
+    if (!currentUserRecord.pendingRequests.includes(userId)) {
       return res.status(400).json({
         status: 'error',
-        message: 'User ID is required',
+        message: 'No pending friend request from this user',
       });
     }
-  
-    try {
-      const currentUserId = req.user.id;
-  
-      // Find or create Friend document for the current user
-      let currentUserRecord = await Friend.findOne({ user: currentUserId });
-      if (!currentUserRecord) {
-        currentUserRecord = new Friend({
-          user: currentUserId,
-          pendingRequests: [],
-          friends: [],
-          blocked: [],
-        });
-        await currentUserRecord.save();
-      }
-  
-      // Find or create Friend document for the target user
-      let targetUserRecord = await Friend.findOne({ user: userId });
-      if (!targetUserRecord) {
-        targetUserRecord = new Friend({
-          user: userId,
-          pendingRequests: [],
-          friends: [],
-          blocked: [],
-        });
-        await targetUserRecord.save();
-      }
-  
-      // Check if the friend request exists
-      if (!currentUserRecord.pendingRequests.includes(userId)) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'No pending friend request from this user',
-        });
-      }
-  
-      // Accept the friend request
-      currentUserRecord.pendingRequests.pull(userId);
-      currentUserRecord.friends.push(userId);
-      await currentUserRecord.save();
-  
-      targetUserRecord.pendingRequests.pull(currentUserId);
-      targetUserRecord.friends.push(currentUserId);
-      await targetUserRecord.save();
-  
-      res.status(200).json({
-        status: 'success',
-        message: 'Friend request accepted',
-      });
-    } catch (err) {
-      console.error('Server error:', err.message);
-      res.status(500).json({
-        status: 'error',
-        message: 'Server error',
-      });
-    }
-  });
-  
-  
-  // @route   GET /users
+
+    currentUserRecord.pendingRequests.pull(userId);
+    currentUserRecord.friends.push(userId);
+    targetUserRecord.friends.push(currentUserId);
+    
+    await Promise.all([currentUserRecord.save(), targetUserRecord.save()]);
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Friend request accepted',
+    });
+  } catch (err) {
+    console.error('Error accepting request:', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Server error',
+    });
+  }
+});
+
+// @route   GET /users
 // @desc    Get all users with full details excluding the current user
 // @access  Private
 router.get('/allUsers', authMiddleware, async (req, res) => {
   try {
     const currentUserId = req.user.id;
 
-    // Find the current user's Friend record to get blocked users
     const currentUserRecord = await Friend.findOne({ user: currentUserId });
     if (!currentUserRecord) {
       return res.status(404).json({
         status: 'error',
-        message: 'User record not found'
+        message: 'User record not found',
       });
     }
 
     const blockedUsers = currentUserRecord.blockedUsers;
-
-    // Find all users excluding the current user and blocked users
     const users = await User.find({
-      _id: { $ne: currentUserId, $nin: blockedUsers }
+      _id: { $ne: currentUserId, $nin: blockedUsers },
     }).select('-password');
 
     if (!users.length) {
       return res.status(404).json({
         status: 'error',
-        message: 'No users found'
+        message: 'No users found',
       });
     }
 
     res.status(200).json({
       status: 'success',
       message: 'Users retrieved successfully',
-      data: users
+      data: users,
     });
   } catch (err) {
-    console.error('Server error:', err.message);
+    console.error('Error fetching users:', err.message);
     res.status(500).json({
       status: 'error',
-      message: 'Server error'
+      message: 'Server error',
     });
   }
 });
-
-  
 
 // @route   GET /get-all-requests
 // @desc    Get all friend requests
 // @access  Private
 router.get('/get-all-requests', authMiddleware, async (req, res) => {
-    try {
-      const currentUserId = req.user.id;
-  
-      // Find the friend document for the current user
-      const userRecord = await Friend.findOne({ user: currentUserId })
-        .populate('pendingRequests', 'name email profileImageUrl')
-        .exec(); // Ensure query execution
-  
-      if (!userRecord) {
-        return res.status(404).json({
-          status: 'error',
-          message: 'User record not found',
-        });
-      }
-  
-      if (userRecord.pendingRequests.length === 0) {
-        return res.status(404).json({
-          status: 'error',
-          message: 'No pending requests found',
-        });
-      }
-  
-      res.status(200).json({
-        status: 'success',
-        data: userRecord.pendingRequests,
-      });
-    } catch (err) {
-      console.error('Server error:', err.message);
-      res.status(500).json({
+  try {
+    const currentUserId = req.user.id;
+
+    const userRecord = await Friend.findOne({ user: currentUserId })
+      .populate('pendingRequests', 'name email profileImageUrl')
+      .exec();
+
+    if (!userRecord || !userRecord.pendingRequests.length) {
+      return res.status(404).json({
         status: 'error',
-        message: 'Server error',
+        message: 'No pending requests found',
       });
     }
-  });
-  
-  
+
+    res.status(200).json({
+      status: 'success',
+      data: userRecord.pendingRequests,
+    });
+  } catch (err) {
+    console.error('Error fetching requests:', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Server error',
+    });
+  }
+});
 
 // @route   GET /get-all-friends
 // @desc    Get all friends of the current user
 // @access  Private
 router.get('/get-all-friends', authMiddleware, async (req, res) => {
-    try {
-      const currentUserId = req.user.id;
-      
-      // Find the current user's Friend record
-      const userRecord = await Friend.findOne({ user: currentUserId }).populate({
-        path: 'friends',
-        select: '-password' // Exclude password field from user details
-      });
-  
-      if (!userRecord) {
-        return res.status(404).json({
-          status: 'error',
-          message: 'User record not found'
-        });
-      }
-  
-      // Filter out blocked users from the friends list
-      const friendsList = userRecord.friends.filter(friend => 
-        !userRecord.blockedUsers.includes(friend._id)
-      );
-  
-      if (friendsList.length === 0) {
-        return res.status(404).json({
-          status: 'error',
-          message: 'No friends found'
-        });
-      }
-  
-      res.status(200).json({
-        status: 'success',
-        data: friendsList
-      });
-    } catch (err) {
-      console.error('Server error:', err.message);
-      res.status(500).json({
+  try {
+    const currentUserId = req.user.id;
+
+    const userRecord = await Friend.findOne({ user: currentUserId }).populate({
+      path: 'friends',
+      select: '-password',
+    });
+
+    if (!userRecord || !userRecord.friends.length) {
+      return res.status(404).json({
         status: 'error',
-        message: 'Server error'
+        message: 'No friends found',
       });
     }
-  });
+
+    const friendsList = userRecord.friends.filter(
+      (friend) => !userRecord.blockedUsers.includes(friend._id)
+    );
+
+    res.status(200).json({
+      status: 'success',
+      data: friendsList,
+    });
+  } catch (err) {
+    console.error('Error fetching friends:', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Server error',
+    });
+  }
+});
 
 // @route   POST /block-friend
 // @desc    Block a friend
 // @access  Private
 router.post('/block-friend', authMiddleware, async (req, res) => {
-    const { userId } = req.body;
-  
-    if (!userId) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'User ID is required'
-      });
+  const { userId } = req.body;
+  if (!validateUserId(userId, res)) return;
+
+  try {
+    const currentUserId = req.user.id;
+
+    let currentUserRecord = await Friend.findOne({ user: currentUserId });
+    if (!currentUserRecord) {
+      currentUserRecord = new Friend({ user: currentUserId });
     }
-  
-    try {
-      const currentUserId = req.user.id;
-  
-      // Find or create Friend document for the current user
-      let currentUserRecord = await Friend.findOne({ user: currentUserId });
-      if (!currentUserRecord) {
-        currentUserRecord = new Friend({
-          user: currentUserId,
-          pendingRequests: [],
-          friends: [],
-          blockedUsers: []
-        });
-      }
-  
-      // Add to blocked users if not already blocked
-      if (!currentUserRecord.blockedUsers.includes(userId)) {
-        currentUserRecord.blockedUsers.push(userId);
-      }
-  
-      // Remove from friends and pending requests if they exist
-      currentUserRecord.friends.pull(userId);
-      currentUserRecord.pendingRequests.pull(userId);
-      
-      await currentUserRecord.save();
-  
-      res.status(200).json({
-        status: 'success',
-        message: 'User blocked successfully'
-      });
-    } catch (err) {
-      console.error('Server error:', err.message, err.stack);
-      res.status(500).json({
-        status: 'error',
-        message: 'Server error'
-      });
+
+    if (!currentUserRecord.blockedUsers.includes(userId)) {
+      currentUserRecord.blockedUsers.push(userId);
     }
-  });
-  
-  
-  // @route   POST /api/friends/unblock-friend
+
+    currentUserRecord.friends.pull(userId);
+    currentUserRecord.pendingRequests.pull(userId);
+    
+    await currentUserRecord.save();
+
+    res.status(200).json({
+      status: 'success',
+      message: 'User blocked successfully',
+    });
+  } catch (err) {
+    console.error('Error blocking user:', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Server error',
+    });
+  }
+});
+
+// @route   POST /unblock-friend
 // @desc    Unblock a friend
 // @access  Private
 router.post('/unblock-friend', authMiddleware, async (req, res) => {
-    const { userId } = req.body;
-  
-    if (!userId) {
+  const { userId } = req.body;
+  if (!validateUserId(userId, res)) return;
+
+  try {
+    const currentUserId = req.user.id;
+
+    let currentUserRecord = await Friend.findOne({ user: currentUserId });
+    if (!currentUserRecord) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User record not found',
+      });
+    }
+
+    if (!currentUserRecord.blockedUsers.includes(userId)) {
       return res.status(400).json({
         status: 'error',
-        message: 'User ID is required'
+        message: 'User is not blocked',
       });
     }
-  
-    try {
-      const currentUserId = req.user.id;
-  
-      // Find the Friend record for the current user
-      let currentUserRecord = await Friend.findOne({ user: currentUserId });
-      if (!currentUserRecord) {
-        return res.status(404).json({
-          status: 'error',
-          message: 'User record not found'
-        });
-      }
-  
-      // Check if the user is blocked
-      if (!currentUserRecord.blockedUsers.includes(userId)) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'User is not blocked'
-        });
-      }
-  
-      // Remove user from blocked list
-      currentUserRecord.blockedUsers.pull(userId);
-  
-      // Add user to friends list
-      if (!currentUserRecord.friends.includes(userId)) {
-        currentUserRecord.friends.push(userId);
-      }
-  
-      // Remove user from pending requests if present
-      currentUserRecord.pendingRequests.pull(userId);
-  
-      await currentUserRecord.save();
-  
-      res.status(200).json({
-        status: 'success',
-        message: 'User unblocked and marked as a friend successfully'
-      });
-    } catch (err) {
-      console.error('Server error:', err.message);
-      res.status(500).json({
-        status: 'error',
-        message: 'Server error'
-      });
-    }
-  });
+
+    currentUserRecord.blockedUsers.pull(userId);
+    currentUserRecord.friends.push(userId);
+    currentUserRecord.pendingRequests.pull(userId);
+
+    await currentUserRecord.save();
+
+    res.status(200).json({
+      status: 'success',
+      message: 'User unblocked and marked as a friend successfully',
+    });
+  } catch (err) {
+    console.error('Error unblocking user:', err.message);
+    res.status(500).json({
+      status: 'error',
+      message: 'Server error',
+    });
+  }
+});
 
 module.exports = router;
